@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
+![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Status](https://img.shields.io/badge/status-active-success.svg)
 
@@ -58,7 +58,7 @@ Assistant/
 
 ### Prerequisites
 
-- Python 3.10 or higher
+- Python 3.11 or higher
 - Microphone
 - Speakers/headphones
 - Camera (optional, for camera mode)

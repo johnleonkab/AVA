@@ -47,4 +47,4 @@ Thumbs.db
 *.db
 *.sqlite
 *.sqlite3
-
+.env.example

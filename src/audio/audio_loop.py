@@ -400,12 +400,9 @@ class AudioLoop:
 
         except asyncio.CancelledError:
             self._log_system("Cerrando conexión...")
-        except ExceptionGroup as EG:
-            self._log_error("Error en el sistema:")
-            self.audio_handler.close_input_stream()
-            traceback.print_exception(EG)
         except Exception as e:
             self._log_error(f"Error inesperado: {e}")
+            self.audio_handler.close_input_stream()
             traceback.print_exc()
         finally:
             self._log_system("Limpiando recursos...")
