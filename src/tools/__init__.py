@@ -19,30 +19,24 @@ def get_all_tools() -> list:
     """
     tools = []
 
-    # Google Search (ya implementado)
+    # Google Search (funciona nativamente con Gemini Live)
     tools.append(types.Tool(google_search=types.GoogleSearch()))
 
-    # Function calling tools
-    function_declarations = []
-
-    # Assistant Config (meta órdenes) - IMPLEMENTADO
-    assistant_config_tool = AssistantConfigTool()
-    function_declarations.extend(assistant_config_tool.get_function_declarations())
-
-    # Google Suite (preparado para futuro)
-    google_suite_tool = GoogleSuiteTool()
-    function_declarations.extend(google_suite_tool.get_function_declarations())
-
-    # File Manager (preparado para futuro)
-    file_manager_tool = FileManagerTool()
-    function_declarations.extend(file_manager_tool.get_function_declarations())
-
-    # Shopping List (preparado para futuro)
-    shopping_list_tool = ShoppingListTool()
-    function_declarations.extend(shopping_list_tool.get_function_declarations())
-
-    if function_declarations:
-        tools.append(types.Tool(function_declarations=function_declarations))
+    # NOTA: Function calling está DESACTIVADO temporalmente
+    # El function calling en Gemini Live API rompe el flujo de audio
+    # cuando se ejecuta una función. El modelo se queda esperando
+    # la respuesta y no continúa con el audio.
+    # 
+    # TODO: Investigar cómo implementar function calling correctamente
+    # en Gemini Live API sin romper el flujo de audio.
+    #
+    # Para habilitar function calling, descomentar el siguiente código:
+    #
+    # function_declarations = []
+    # assistant_config_tool = AssistantConfigTool()
+    # function_declarations.extend(assistant_config_tool.get_function_declarations())
+    # if function_declarations:
+    #     tools.append(types.Tool(function_declarations=function_declarations))
 
     return tools
 

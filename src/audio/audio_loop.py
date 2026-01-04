@@ -65,6 +65,11 @@ class AudioLoop:
         self.last_activity_time = None
         self.is_speaking = False
         self.is_listening = False
+        
+        # Estados para logging claro
+        self.user_speaking = False
+        self.processing_response = False
+        self.function_calling = False
 
     def _log(self, message: str, color: str = Colors.RESET, prefix: str = "INFO"):
         """Imprime un mensaje con timestamp y color"""
@@ -90,6 +95,18 @@ class AudioLoop:
     def _log_success(self, message: str):
         """Log específico para éxito"""
         self._log(message, Colors.GREEN, "OK")
+    
+    def _log_user(self, message: str):
+        """Log específico para actividad del usuario"""
+        self._log(message, Colors.YELLOW, "USER")
+    
+    def _log_processing(self, message: str):
+        """Log específico para procesamiento"""
+        self._log(message, Colors.CYAN, "PROC")
+    
+    def _log_function(self, message: str):
+        """Log específico para function calling"""
+        self._log(message, Colors.BLUE, "FUNC")
 
     async def send_text(self):
         """Envía texto como input al modelo"""
@@ -179,61 +196,92 @@ class AudioLoop:
             await self.session.send(input=msg)
 
     async def listen_audio(self):
-        """Escucha audio del micrófono (echo cancellation desactivado temporalmente)"""
-        self._log_mic("Iniciando captura de audio del micrófono...")
+        """Escucha audio del micrófono con echo cancellation robusto"""
         await self.audio_handler.open_input_stream()
-        self._log_success("Micrófono listo y capturando audio")
-        self._log_system("⚠️  Echo cancellation DESACTIVADO temporalmente para debugging")
         self.is_listening = True
+        self._log_system("🔇 Echo cancellation activado")
         
-        last_log_time = time.time()
+        # Habilitar procesador de audio
+        self.audio_processor.enable()
+        
+        consecutive_no_voice = 0
+        max_consecutive_no_voice = 5  # Permitir algunos chunks sin voz
         
         while True:
             data = await self.audio_handler.read_audio_chunk()
             current_time = time.time()
             
-            # Enviar audio directamente sin procesamiento (para debugging)
-            # TODO: Reactivar echo cancellation cuando funcione correctamente
-            self.audio_chunks_sent += 1
-            self.last_activity_time = current_time
+            # NO enviar audio cuando el asistente está hablando (evitar feedback loop)
+            if self.is_speaking:
+                # El asistente está hablando, no enviar audio del micrófono
+                consecutive_no_voice = 0
+                continue
             
-            await self.out_queue.put(data)
+            # Procesar audio con echo cancellation y VAD
+            processed_data, has_voice = self.audio_processor.process_input(
+                data["data"], current_time
+            )
             
-            # Log cada segundo aproximadamente
-            if current_time - last_log_time >= 1.0:
-                self._log_mic(f"Audio capturado ({self.audio_chunks_sent} chunks enviados)")
-                last_log_time = current_time
+            # Detectar cuando el usuario empieza a hablar
+            if has_voice and not self.user_speaking:
+                self.user_speaking = True
+                self._log_user("🎤 Usuario hablando...")
+                consecutive_no_voice = 0
+            
+            # Detectar cuando el usuario termina de hablar
+            if not has_voice and self.user_speaking:
+                consecutive_no_voice += 1
+                if consecutive_no_voice >= max_consecutive_no_voice:
+                    self.user_speaking = False
+                    self._log_user("✅ Usuario terminó de hablar")
+                    consecutive_no_voice = 0
+            else:
+                consecutive_no_voice = 0
+            
+            # Estrategia muy permisiva: enviar audio siempre que el asistente no esté hablando
+            # El echo cancellation ya filtra el eco, así que podemos ser muy permisivos
+            # Solo bloquear completamente cuando el asistente está hablando activamente
+            if not self.is_speaking:
+                # Asistente no está hablando, enviar todo el audio
+                self.audio_chunks_sent += 1
+                self.last_activity_time = current_time
+                
+                # Actualizar datos con audio procesado
+                data["data"] = processed_data
+                await self.out_queue.put(data)
 
     async def receive_audio(self):
         """Recibe audio del websocket y lo pone en la cola"""
-        self._log_assistant("Esperando respuesta del asistente...")
         while True:
             turn = self.session.receive()
             interrupted = False
             turn_started = False
             text_buffer = []
             last_audio_time = None
+            processing_logged = False
             
             async for response in turn:
                 # Detectar si el turno fue interrumpido
                 if hasattr(response, 'interrupted') and response.interrupted:
                     interrupted = True
-                    self._log_error("⚠️  Turno interrumpido por el usuario")
                 elif hasattr(response, 'turn_complete'):
                     if hasattr(response.turn_complete, 'interrupted'):
                         interrupted = response.turn_complete.interrupted
-                        if interrupted:
-                            self._log_error("⚠️  Turno interrumpido")
-                    # turn_complete indica que el turno terminó normalmente
-                    if not interrupted:
-                        self._log_assistant("✅ Turno completado por el modelo")
                 
-                # Procesar audio PRIMERO (prioridad máxima - no bloquear nunca)
+                # Detectar cuando empieza a procesar la respuesta
+                if not processing_logged and not response.data and not response.text:
+                    if not turn_started:
+                        self.processing_response = True
+                        self._log_processing("🔄 Procesando respuesta...")
+                        processing_logged = True
+                
+                # Procesar audio
                 if data := response.data:
                     if not turn_started:
                         turn_started = True
                         self.is_speaking = True
-                        self._log_assistant("🎤 Asistente empezando a hablar...")
+                        self.processing_response = False
+                        self._log_assistant("🎤 Asistente hablando...")
                     
                     last_audio_time = time.time()
                     self.audio_chunks_received += 1
@@ -245,34 +293,22 @@ class AudioLoop:
                     text_buffer.append(text)
                     # Mostrar texto en tiempo real
                     print(f"{Colors.MAGENTA}{text}{Colors.RESET}", end="", flush=True)
-                
-                # Manejar function calling SOLO si no hay audio/texto (no bloquear)
-                # Ejecutar en background para no interrumpir el flujo
-                if hasattr(response, 'function_call') and response.function_call:
-                    asyncio.create_task(self._handle_function_call(response.function_call))
-                elif hasattr(response, 'function_calls') and response.function_calls:
-                    for fc in response.function_calls:
-                        asyncio.create_task(self._handle_function_call(fc))
             
             # Al finalizar el turno, marcar que el asistente ya no está hablando
             if turn_started:
                 self.is_speaking = False
-                full_text = "".join(text_buffer)
-                if full_text.strip():
-                    self._log_assistant(f"✅ Asistente terminó de hablar - Esperando tu respuesta...")
-                else:
-                    self._log_assistant("✅ Asistente terminó de hablar - Esperando tu respuesta...")
+                self.processing_response = False
+                self._log_assistant("✅ Asistente terminó de hablar")
             
             # Reseteo de seguridad: si no hay audio recibido en los últimos 3 segundos, resetear flag
             if self.is_speaking and last_audio_time:
                 time_since_last_audio = time.time() - last_audio_time
                 if time_since_last_audio > 3.0:
-                    self._log_system("⚠️  Reseteando is_speaking (timeout - no hay audio desde hace 3s)")
                     self.is_speaking = False
+                    self.processing_response = False
             
             # Solo vaciar la cola si hubo una interrupción real del usuario
             if interrupted:
-                self._log_error("🗑️  Limpiando cola de audio debido a interrupción")
                 while not self.audio_in_queue.empty():
                     try:
                         self.audio_in_queue.get_nowait()
@@ -281,7 +317,7 @@ class AudioLoop:
 
     async def _handle_function_call(self, function_call):
         """
-        Maneja las llamadas a funciones del modelo (ejecuta en background)
+        Maneja las llamadas a funciones del modelo (síncrono para que el modelo reciba la respuesta)
         
         Args:
             function_call: Objeto con la información de la función a ejecutar
@@ -306,32 +342,57 @@ class AudioLoop:
                     arguments = dict(args_val) if isinstance(args_val, dict) else {}
             
             if not function_name:
+                self._log_error("❌ No se pudo extraer el nombre de la función")
                 return
             
-            self._log_system(f"🔧 Ejecutando función: {function_name}")
+            # Log cuando se detecta una función
+            if not self.function_calling:
+                self.function_calling = True
+                self._log_function(f"🔧 Llamando a función: {function_name}")
             
             # Ejecutar la función
             if function_name.startswith("set_") or function_name.startswith("get_") or function_name == "reset_assistant_config":
                 result = await self.assistant_config_tool.execute(function_name, arguments)
-                self._log_success(f"✅ {result.get('message', 'Función ejecutada')}")
+                self._log_function(f"✅ Función ejecutada: {result.get('message', 'OK')}")
                 
-                # Enviar resultado de vuelta al modelo
+                # Enviar resultado de vuelta al modelo (CRÍTICO para que continúe)
                 if self.session:
                     try:
-                        function_response = types.Part.from_function_response(
+                        # Construir la respuesta de función
+                        function_response_part = types.Part.from_function_response(
                             name=function_name,
                             response=result
                         )
-                        await self.session.send(
-                            input=types.Content(
-                                parts=[function_response],
-                                role="tool"
-                            )
+                        
+                        # Crear el contenido con la respuesta
+                        function_response_content = types.Content(
+                            parts=[function_response_part],
+                            role="tool"
                         )
+                        
+                        # Enviar la respuesta al modelo para que pueda continuar
+                        await self.session.send(input=function_response_content)
+                        self._log_function("📤 Resultado enviado al modelo - esperando respuesta...")
+                        
+                        # Resetear el flag de procesamiento para que el modelo pueda responder
+                        self.processing_response = False
                     except Exception as e:
-                        self._log_error(f"Error enviando resultado: {e}")
+                        self._log_error(f"❌ Error enviando resultado: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    self._log_error("❌ No hay sesión disponible para enviar resultado")
+                
+                # Resetear flag después de ejecutar
+                self.function_calling = False
+            else:
+                self._log_error(f"❌ Función desconocida: {function_name}")
+                self.function_calling = False
         except Exception as e:
-            self._log_error(f"Error en function call: {e}")
+            self._log_error(f"❌ Error en function call: {e}")
+            import traceback
+            traceback.print_exc()
+            self.function_calling = False
     
     async def play_audio(self):
         """Reproduce audio desde la cola y lo envía al procesador de eco"""

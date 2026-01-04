@@ -2,13 +2,11 @@
 
 from .audio_loop import AudioLoop
 from .audio_handler import AudioHandler
-from .echo_cancellation import AudioProcessor, SimpleEchoCanceller, VoiceActivityDetector
+from .echo_cancellation import AudioProcessor
 
 __all__ = [
     "AudioLoop",
     "AudioHandler",
     "AudioProcessor",
-    "SimpleEchoCanceller",
-    "VoiceActivityDetector",
 ]
 

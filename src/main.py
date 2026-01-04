@@ -4,8 +4,15 @@ import argparse
 import asyncio
 import os
 import sys
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 from src.audio import AudioLoop
+
+# Cargar variables de entorno desde .env
+env_path = Path(__file__).parent.parent / ".env"
+load_dotenv(env_path)
 
 DEFAULT_MODE = "camera"
 
